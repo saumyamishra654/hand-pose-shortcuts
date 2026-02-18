@@ -7,6 +7,7 @@ import subprocess
 
 gesture_actions = {
     'Pointing_Up': 'roshni',
+    'Open_Palm': 'raga',
 }
 
 last_gesture = None
@@ -69,7 +70,7 @@ with GestureRecognizer.create_from_options(options) as recognizer:
                 action = gesture_actions.get(latest_result.gestures[0][0].category_name)
                 if action:
                     print(f"Performing action: {action}")
-                    subprocess.run(['shortcuts', 'run', action])
+                    subprocess.Popen(['shortcuts', 'run', action])
                     last_triggered = time.time()
             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
             gesture = latest_result.gestures[0][0]

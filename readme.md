@@ -1,0 +1,1 @@
+s is a handwritten project i wrote for fun in a day, that uses mediapipe and opencv to do hand gesture recognition and are mapped to shortcuts on the mac shortcuts app. you can rename the shortcuts in the gesture_actions dictionary to work with more gestures, or remap them to shortcuts on your laptop. will also be adding a mode to run scripts directly from inside the code
