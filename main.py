@@ -4,11 +4,21 @@ from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
 import time
 import subprocess
+import webbrowser
 
 gesture_actions = {
-    'Pointing_Up': 'roshni',
-    'Open_Palm': 'raga',
+    'Pointing_Up': ('url', 'https://i.kym-cdn.com/photos/images/list/002/594/858/4be.jpg'),
+    'Open_Palm': ('shell', '/Users/saumyamishra/Desktop/intern/summer25/RagaDetection/raga-detection/run_local_app.sh'),
+    'Thumb_Up': ('app', 'Github Desktop')
 }
+
+def perform_action(action_type, action_value):
+    if action_type == 'url':
+        webbrowser.open(action_value)
+    elif action_type == 'shell':
+        subprocess.Popen(action_value, shell=True)
+    elif action_type == "app":
+        subprocess.Popen(['open', '-a', action_value])
 
 last_gesture = None
 gesture_frame_count = 0
@@ -66,11 +76,11 @@ with GestureRecognizer.create_from_options(options) as recognizer:
             if latest_result.gestures[0][0].category_name != last_gesture:
                 gesture_frame_count = 0
                 last_triggered = 0
-            if gesture_frame_count > 5 and (time.time() - last_triggered) > 2:
+            if gesture_frame_count > 5 and (time.time() - last_triggered) > 8:
                 action = gesture_actions.get(latest_result.gestures[0][0].category_name)
                 if action:
                     print(f"Performing action: {action}")
-                    subprocess.Popen(['shortcuts', 'run', action])
+                    perform_action(action[0], action[1])
                     last_triggered = time.time()
             cv2.rectangle(frame, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)
             gesture = latest_result.gestures[0][0]
