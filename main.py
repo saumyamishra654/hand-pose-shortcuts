@@ -2,6 +2,7 @@ import cv2
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from mediapipe.tasks.python.vision.gesture_recognizer import GestureRecognizerResult
 import time
 import subprocess
 import webbrowser
@@ -30,15 +31,16 @@ model_path = '/Users/saumyamishra/Desktop/Projects/hand-pose-shortcuts/gesture_r
 #initialise video capture
 cap = cv2.VideoCapture(1)
 
-#written here by callback, and read by main loop
-latest_result = None
+
 
 #mp options
 BaseOptions = mp.tasks.BaseOptions
 GestureRecognizer = mp.tasks.vision.GestureRecognizer
 GestureRecognizerOptions = mp.tasks.vision.GestureRecognizerOptions
-GestureRecognizerResult = mp.tasks.vision.GestureRecognizerResult
 VisionRunningMode = mp.tasks.vision.RunningMode
+
+#written here by callback, and read by main loop
+latest_result: GestureRecognizerResult | None = None
 
 # creating a gesture recognizer instance with the live stream mode
 def print_result(result, output_image: mp.Image, timestamp_ms: int):
