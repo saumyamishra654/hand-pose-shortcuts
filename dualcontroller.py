@@ -11,6 +11,7 @@ import time
 import subprocess
 import numpy as np
 import webbrowser
+import os
 
 last_distance = None
 smoothed_distance = None
@@ -27,6 +28,8 @@ DISTANCE_SMOOTHING_ALPHA = 0.35
 CONTROL_UPDATE_INTERVAL = 0.15
 YOUTUBE_URL = 'https://youtu.be/92ydUdqWE1g?si=edrLceeo2uEqSdZr/'
 YOUTUBE_TRIGGER_COOLDOWN = 4.0
+FOCUS_CHECK_INTERVAL = 0.5
+CAMERA_INDEX = 1
 
 last_youtube_trigger = 0.0
 both_pointing_up_active = False
@@ -125,11 +128,28 @@ def set_system_brightness(target_brightness: float, current_estimate: float) -> 
 
     return set_brightness_with_keys(target_brightness, current_estimate)
 
+
+def is_app_focused() -> bool:
+    script = 'tell application "System Events" to unix id of first application process whose frontmost is true'
+    result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+    if result.returncode != 0:
+        return True
+    try:
+        frontmost_pid = int(result.stdout.strip())
+    except ValueError:
+        return True
+    return frontmost_pid == os.getpid()
+
 #path to gesture recognition model
 model_path = '/Users/saumyamishra/Desktop/Projects/hand-pose-shortcuts/gesture_recognizer.task'
 
 #initialise video capture
-cap = cv2.VideoCapture(1)
+cap = None
+camera_active = False
+window_focused = True
+last_focus_check = 0.0
+paused_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+cv2.putText(paused_frame, 'Paused (window not focused)', (70, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
 
 #written here by callback, and read by main loop
 latest_result = None
@@ -154,9 +174,55 @@ options = GestureRecognizerOptions(
 
 with GestureRecognizer.create_from_options(options) as recognizer:
     while True:
+        now = time.time()
+        if now - last_focus_check >= FOCUS_CHECK_INTERVAL:
+            window_focused = is_app_focused()
+            last_focus_check = now
+
+        if window_focused and not camera_active:
+            cap = cv2.VideoCapture(CAMERA_INDEX)
+            if cap.isOpened():
+                camera_active = True
+                print('Camera resumed.')
+                last_distance = None
+                smoothed_distance = None
+            else:
+                if cap is not None:
+                    cap.release()
+                cap = None
+                frame = paused_frame.copy()
+                cv2.putText(frame, 'Waiting for camera...', (170, 280), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 2)
+                cv2.imshow('feed', frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+                continue
+
+        if (not window_focused) and camera_active:
+            if cap is not None:
+                cap.release()
+            cap = None
+            camera_active = False
+            last_distance = None
+            smoothed_distance = None
+            print('Camera paused (window not focused).')
+
+        if not camera_active:
+            frame = paused_frame.copy()
+            cv2.imshow('feed', frame)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+            continue
+
+        if cap is None:
+            continue
+
         ret, frame = cap.read()
         if not ret:
-            break
+            if cap is not None:
+                cap.release()
+            cap = None
+            camera_active = False
+            continue
 
         #image that cv2 creates needs to be convted to mp.Image media type
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -268,6 +334,7 @@ with GestureRecognizer.create_from_options(options) as recognizer:
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 #release camera and destroy windows
-cap.release()
+if cap is not None:
+    cap.release()
 cv2.destroyAllWindows()
 
