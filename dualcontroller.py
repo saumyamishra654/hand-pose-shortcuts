@@ -10,11 +10,120 @@ from mediapipe.tasks.python import vision
 import time
 import subprocess
 import numpy as np
+import webbrowser
 
-last_distance = 0
+last_distance = None
+smoothed_distance = None
 current_volume = 50
 last_volume_update = 0
 current_brightness = 0.5
+brightness_backend = 'brightness'
+reported_brightness_unverified = False
+reported_brightness_blocked = False
+
+PINCH_MIN = 0.03
+PINCH_MAX = 0.25
+DISTANCE_SMOOTHING_ALPHA = 0.35
+CONTROL_UPDATE_INTERVAL = 0.15
+YOUTUBE_URL = 'https://youtu.be/92ydUdqWE1g?si=edrLceeo2uEqSdZr/'
+YOUTUBE_TRIGGER_COOLDOWN = 4.0
+
+last_youtube_trigger = 0.0
+both_pointing_up_active = False
+
+
+def set_system_volume(volume: int) -> int | None:
+    script_set = f"set volume output volume {volume} without output muted"
+    script_get = "output volume of (get volume settings)"
+    result = subprocess.run(
+        ['osascript', '-e', script_set, '-e', script_get],
+        capture_output=True,
+        text=True
+    )
+    if result.returncode != 0:
+        print(f"Volume update failed: {result.stderr.strip()}")
+        return None
+    try:
+        return int(result.stdout.strip())
+    except ValueError:
+        print(f"Unexpected volume response: {result.stdout.strip()}")
+        return None
+
+
+def map_distance_to_percent(distance: float) -> int:
+    clamped = max(PINCH_MIN, min(PINCH_MAX, distance))
+    normalized = (clamped - PINCH_MIN) / (PINCH_MAX - PINCH_MIN)
+    return int(round(normalized * 100))
+
+
+def set_brightness_with_keys(target_brightness: float, current_estimate: float) -> tuple[bool, float, bool]:
+    global brightness_backend, reported_brightness_blocked
+
+    if abs(target_brightness - current_estimate) < 0.03:
+        return True, current_estimate, False
+
+    step_size = 0.0625
+    steps = max(1, int(round(abs(target_brightness - current_estimate) / step_size)))
+    key_code = 144 if target_brightness > current_estimate else 145
+
+    script = (
+        'tell application "System Events"\n'
+        f'  repeat {steps} times\n'
+        f'    key code {key_code}\n'
+        '  end repeat\n'
+        'end tell'
+    )
+
+    result = subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+    if result.returncode != 0:
+        error_text = (result.stderr or '').strip()
+        if error_text:
+            print(f"Brightness key fallback failed: {error_text}")
+        lowered_error = error_text.lower()
+        if (
+            'not allowed assistive access' in lowered_error
+            or 'not authorised' in lowered_error
+            or 'not allowed to send keystrokes' in lowered_error
+        ):
+            brightness_backend = 'blocked'
+            if not reported_brightness_blocked:
+                print('Grant Accessibility permission to Terminal/VS Code to send brightness key events.')
+                print('System Settings → Privacy & Security → Accessibility, then enable your terminal and VS Code.')
+                reported_brightness_blocked = True
+        return False, current_estimate, False
+
+    return True, target_brightness, True
+
+
+def set_system_brightness(target_brightness: float, current_estimate: float) -> tuple[bool, float, bool]:
+    global brightness_backend
+
+    if brightness_backend == 'blocked':
+        return False, current_estimate, False
+
+    if brightness_backend == 'brightness':
+        result = subprocess.run(
+            ['brightness', f'{target_brightness:.2f}'],
+            capture_output=True,
+            text=True
+        )
+        tool_output = f"{result.stdout or ''}\n{result.stderr or ''}".lower()
+        tool_failed = (
+            result.returncode != 0
+            or 'failed to set brightness' in tool_output
+            or 'failed to get brightness' in tool_output
+            or 'error -' in tool_output
+        )
+        if not tool_failed:
+            return True, target_brightness, False
+
+        stderr_text = (result.stderr or '').strip()
+        if stderr_text:
+            print(stderr_text)
+        print('Brightness utility failed; switching to keyboard brightness fallback.')
+        brightness_backend = 'keys'
+
+    return set_brightness_with_keys(target_brightness, current_estimate)
 
 #path to gesture recognition model
 model_path = '/Users/saumyamishra/Desktop/Projects/hand-pose-shortcuts/gesture_recognizer.task'
@@ -68,6 +177,23 @@ with GestureRecognizer.create_from_options(options) as recognizer:
             
             left = hands.get('Left')
             right = hands.get('Right')
+
+            if left and right:
+                left_gesture_name = left['gesture'].category_name
+                right_gesture_name = right['gesture'].category_name
+                both_pointing_up = left_gesture_name == 'Pointing_Up' and right_gesture_name == 'Pointing_Up'
+                now = time.time()
+                if both_pointing_up:
+                    if (not both_pointing_up_active) and (now - last_youtube_trigger > YOUTUBE_TRIGGER_COOLDOWN):
+                        webbrowser.open(YOUTUBE_URL)
+                        last_youtube_trigger = now
+                        print(f'Opened YouTube: {YOUTUBE_URL}')
+                    both_pointing_up_active = True
+                else:
+                    both_pointing_up_active = False
+            else:
+                both_pointing_up_active = False
+
             #need to make separate bounding boxes for each hand, read action from left hand and then later implement distance mapping logic
             if left:
                 #bounding box for left hand
@@ -100,21 +226,39 @@ with GestureRecognizer.create_from_options(options) as recognizer:
                 distance = ((thumb_tip.x - index_tip.x) ** 2 + (thumb_tip.y - index_tip.y) ** 2) ** 0.5
                 cv2.putText(frame, f"d={distance:.3f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
 
+                if smoothed_distance is None:
+                    smoothed_distance = distance
+                else:
+                    smoothed_distance = ((1 - DISTANCE_SMOOTHING_ALPHA) * smoothed_distance) + (DISTANCE_SMOOTHING_ALPHA * distance)
+
                 if left:
                     if last_distance is not None:
-                        delta = distance - last_distance
-                        if abs(delta) > 0.01 and time.time() - last_volume_update > 0.5:
+                        if time.time() - last_volume_update > CONTROL_UPDATE_INTERVAL:
                             left_gesture = left['gesture'].category_name
+                            target_percent = map_distance_to_percent(smoothed_distance)
                             if left_gesture == 'Open_Palm':  # volume mode
-                                current_volume = max(0, min(100, current_volume + int(delta * 500)))
-                                subprocess.Popen(['osascript', '-e', f'set volume output volume {current_volume}'])
+                                if abs(target_percent - current_volume) >= 2:
+                                    applied_volume = set_system_volume(target_percent)
+                                else:
+                                    applied_volume = None
                                 last_volume_update = time.time()
-                                print(f"Volume: {current_volume}")
-                            elif left_gesture == 'Closed_Fist':  # brightness mode
-                                current_brightness = max(0.0, min(1.0, current_brightness + delta * 5))
-                                subprocess.Popen(['brightness', f'{current_brightness:.2f}'])
+                                if applied_volume is not None:
+                                    current_volume = applied_volume
+                                    print(f"Volume: {applied_volume}")
+                            elif left_gesture == 'Pointing_Up':  # brightness mode
+                                target_brightness = target_percent / 100.0
+                                if abs(target_brightness - current_brightness) >= 0.04:
+                                    brightness_ok, applied_brightness, unverified = set_system_brightness(target_brightness, current_brightness)
+                                    if brightness_ok:
+                                        current_brightness = applied_brightness
+                                        if unverified:
+                                            if not reported_brightness_unverified:
+                                                print('Brightness key events sent; macOS does not provide programmatic readback here.')
+                                                reported_brightness_unverified = True
+                                            print(f"Brightness (target): {current_brightness:.2f}")
+                                        else:
+                                            print(f"Brightness: {current_brightness:.2f}")
                                 last_volume_update = time.time()
-                                print(f"Brightness: {current_brightness:.2f}")
 
                 last_distance = distance  # always update
 
